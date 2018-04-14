@@ -24,13 +24,14 @@ GDparams.n_epochs = 10;
 GDparams.eta = eta_opt;
 
 [b, W] = InitParam(M, trainX, trainY);
+[P, H, S, S_hat, muS, varS] = EvaluateClassifier(trainX, W, b);
 
 % J = ComputeCost(trainX, trainY, W, b, lambda);
 
-% [b_grad, W_grad] = ComputeGradients(trainX, trainY, W, b, lambda);
+[b_grad, W_grad] = ComputeGradients(trainX, trainY, W, b, lambda);
 % CompareGradients(trainX(1:300, 1), trainY(:, 1), M);
-[Wstar, bstar, tL_saved, vL_saved] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b, lambda);
-acc = ComputeAccuracy(X_test, y_test, Wstar, bstar)
+% [Wstar, bstar, tL_saved, vL_saved] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b, lambda);
+% acc = ComputeAccuracy(X_test, y_test, Wstar, bstar)
 %%% Subfunctions
 
 function [X, Y, y] = LoadBatch(filename)
@@ -58,7 +59,7 @@ for k=1:K
 end
 end
 
-function [P, H, S] = EvaluateClassifier(X0, W, b)
+function [P, H, S, S_hat, muS, varS] = EvaluateClassifier(X0, W, b)
 K = length(W);
 N = size(X0, 2);
 S = cell(1, K); S_hat = S;
@@ -83,15 +84,19 @@ P = softmax(S{end});
 end
 
 function S_hat = BatchNormalize(S, muS, varS)
-S_hat = ((diag(bsxfun(@plus, varS, eps))).^(-0.5)) * (bsxfun(@minus, S, muS));
+S_hat = ((diag(varS + eps))^(-1/2)) * (bsxfun(@minus, S, muS));
 end
 
 function g = BatchNormBackPass(g, S, muS, varS, N)
-Vb = diag(varS + eps);
-dJdVb = -0.5*sum(g.*Vb.^(-3/2).*diag(S-muS));
-dJdmub = -sum(g.*Vb.^(-1/2));
-dJdS = g.*Vb.^(-1/2) + (2/N)*dJdVb.*diag(S-muS) + dJdmub*(1/N);
+g = g';
+Vb = (varS + eps);
+size(Vb)
+dJdVb = -0.5*sum(g.*Vb.^(-3/2).*(S-muS), 2);
+dJdmub = -sum(g.*Vb.^(-1/2), 2);
+size(Vb), size(dJdVb), size(dJdmub)
+dJdS = g.*Vb.^(-1/2) + (2/N)*dJdVb.*(S-muS) + dJdmub*(1/N);
 g = dJdS;
+size(g)
 end
 
 function J = ComputeCost(X, Y, W, b, lambda)
@@ -116,32 +121,32 @@ end
 function [b_grad, W_grad] = ComputeGradients(X, Y, W, b, lambda)
 N = size(X,2);
 K = length(W);
-[P, H, S] = EvaluateClassifier(X, W, b);
+[P, H, S, S_hat, muS, varS] = EvaluateClassifier(X, W, b);
 b_grad = cell(1, K);
 W_grad = cell(1, K);
 dJdb = cell(1,K);
 dJdW = cell(1,K);
 
 g = -(Y-P)';
-
 dJdb{K} = (1/N)*sum(g,2);
-dJdW{K} = (1/N)*sum(g'*H(K-1)' + 2*lambda*W{K});
+dJdW{K} = (1/N)*sum(g'*H{K-1}' + 2*lambda*W{K});
 
 g = g*W{K};
 g = g*diag((S_hat{K-1}>0));
 
 for l = K-1:-1:1
-    g = BatchNormBackPass(g, S, muS, varS);
+    g = BatchNormBackPass(g, S{l}, muS{l}, varS{l}, N);
     dJdb{l} = (1/N)*sum(g);
     if l == 1
-        dJdW = (1/N)*sum(g'*X' + 2*lambda*W{l});
+        dJdW{l} = (1/N)*sum(g*X' + 2*lambda*W{l});
     end
     if l > 1
-        dJdW{l} = (1/N)*sum(g'*H{l}' + 2*lambda*W{l});
-        g = g*W{l};
+        dJdW{l} = (1/N)*sum(g*H{l}' + 2*lambda*W{l});
+        g = g*W{l}';
         g = g*diag((S_hat{l-1}>0));
     end
 end
+
 b_grad = dJdb;
 W_grad = dJdW;
 end
