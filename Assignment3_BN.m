@@ -54,22 +54,44 @@ M = [d, M, L];
 W = cell(1, K); b=cell(1,K);
 for k=1:K
     W{k} = 0.001*randn(M(k+1), M(k));
-    b{k} = zeros(M(k+1), 1);  
+    b{k} = zeros(M(k+1), 1);
 end
 end
 
 function [P, H, S] = EvaluateClassifier(X0, W, b)
 K = length(W);
-S = cell(1, K);
-H = cell(1, K); 
+N = size(X0, 2);
+S = cell(1, K); S_hat = S;
+H = cell(1, K);
+muS = cell(1, K);
+varS = cell(1, K);
+
 S{1} = bsxfun(@plus, W{1}*X0, b{1});
-H{1} = max(0, S{1});
+muS{1} = mean(S{1}, 2);
+varS{1} = var(S{1}, 0, 2)*((N-1)/N);
+S_hat{1} = BatchNormalize(S{1}, muS{1}, varS{1});
+H{1} = max(0, S_hat{1});
 for i=2:K-1
     S{i} = bsxfun(@plus, W{i}*H{i-1}, b{i});
-    H{i} = max(0, S{i});
+    muS{i} = mean(S{i}, 2);
+    varS{i} = var(S{i}, 0, 2)*((N-1)/N);
+    S_hat{i} = BatchNormalize(S{i}, muS{i}, varS{i});
+    H{i} = max(0, S_hat{i});
 end
 S{K} = bsxfun(@plus, W{K}*H{K-1}, b{K});
 P = softmax(S{end});
+end
+
+function S_hat = BatchNormalize(S, muS, varS)
+S_hat = ((diag(bsxfun(@plus, varS, eps))).^(-0.5)) * (bsxfun(@minus, S, muS));
+end
+
+function g = BatchNormBackPass(g, S, muS, varS, N)
+Vb = diag(varS + eps);
+dJdVb = -0.5*sum(g.*Vb.^(-3/2).*diag(S-muS));
+dJdmub = -sum(g.*Vb.^(-1/2));
+dJdS = g.*Vb.^(-1/2) + (2/N)*dJdVb.*diag(S-muS) + dJdmub*(1/N);
+g = dJdS;
 end
 
 function J = ComputeCost(X, Y, W, b, lambda)
@@ -100,29 +122,28 @@ W_grad = cell(1, K);
 dJdb = cell(1,K);
 dJdW = cell(1,K);
 
-for k=1:K
-   dJdb{k} = zeros(size(b{k}));
-   dJdW{k} = zeros(size(W{k}));
-end
-for i=1:N
-   g = (-Y(:,i)'/(Y(:,i)'*P(:,i)))*(diag(P(:,i))-(P(:,i)*P(:,i)'));
-   for k=K:-1:1
-       dJdb{k} = dJdb{k} + g';
-       if k == 1
-          dJdW{k} = dJdW{k} + g'*X(:,i)';
-       end
-       if k>1
-          dJdW{k} = dJdW{k} + g'*H{k-1}(:,i)';
-          g = g*W{k};
-          g = g*diag(S{k-1}(:,i)>0);
-       end
-   end
-end
+g = -(Y-P)';
 
-for k=1:K
-   b_grad{k} = dJdb{k}/N;
-   W_grad{k} = dJdW{k}/N + 2*lambda*W{k};
+dJdb{K} = (1/N)*sum(g,2);
+dJdW{K} = (1/N)*sum(g'*H(K-1)' + 2*lambda*W{K});
+
+g = g*W{K};
+g = g*diag((S_hat{K-1}>0));
+
+for l = K-1:-1:1
+    g = BatchNormBackPass(g, S, muS, varS);
+    dJdb{l} = (1/N)*sum(g);
+    if l == 1
+        dJdW = (1/N)*sum(g'*X' + 2*lambda*W{l});
+    end
+    if l > 1
+        dJdW{l} = (1/N)*sum(g'*H{l}' + 2*lambda*W{l});
+        g = g*W{l};
+        g = g*diag((S_hat{l-1}>0));
+    end
 end
+b_grad = dJdb;
+W_grad = dJdW;
 end
 
 function [Wstar, bstar, tL_saved, vL_saved] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b, lambda)
@@ -179,7 +200,7 @@ lambda=0;
 [b, W] = InitParam(M, trainX, trainY);
 [b_grad, W_grad] = ComputeGradients(trainX, trainY, W, b, lambda);
 [b_gradn, W_gradn] = ComputeGradsNumSlow(trainX, trainY, W, b, lambda, 1e-5);
-% [b_gradn_quick, W_gradn_quick] = ComputeGradsNum(trainX(1:300, 1), trainY(:,1), W, b, lambda, 1e-5);    
+% [b_gradn_quick, W_gradn_quick] = ComputeGradsNum(trainX(1:300, 1), trainY(:,1), W, b, lambda, 1e-5);
 K = length(W);
 for k=1:K
     w_grad_diff_slow{k} = max(max(abs(W_grad{k}-W_gradn{k})));
@@ -215,7 +236,7 @@ end
 for j=1:length(W)
     grad_W{j} = zeros(size(W{j}));
     
-    for i=1:numel(W{j})   
+    for i=1:numel(W{j})
         W_try = W;
         W_try{j}(i) = W_try{j}(i) + h;
         c2 = ComputeCost(X, Y, W_try, b, lambda);
@@ -255,11 +276,11 @@ for j=1:length(W)
         W_try = W;
         W_try{j}(i) = W_try{j}(i) - h;
         c1 = ComputeCost(X, Y, W_try, b, lambda);
-    
+        
         W_try = W;
         W_try{j}(i) = W_try{j}(i) + h;
         c2 = ComputeCost(X, Y, W_try, b, lambda);
-    
+        
         grad_W{j}(i) = (c2-c1) / (2*h);
     end
 end
