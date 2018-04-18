@@ -4,34 +4,80 @@ rng(400);
 [trainX, trainY, trainy] = LoadBatch('Dataset/data_batch_1.mat');
 [valX, valY, valy] = LoadBatch('Dataset/data_batch_2.mat');
 [X_test, Y_test, y_test] = LoadBatch('Dataset/test_batch.mat');
-% [d, N] = size(trainX);
-% [K, ~] = size(trainY);
-M = [50]; % number of hidden nodes
+[d, N] = size(trainX);
+[K, ~] = size(trainY);
+M = [50, 30]; % number of hidden nodes
 
 mean_X = mean(trainX,2);
 trainX = trainX - repmat(mean_X, [1, size(trainX,2)]);
 valX = valX - repmat(mean_X, [1, size(valX,2)]);
 %%% #################### %%%
 
-eta_opt = 0.023624927961652;
-lambda_opt = 3.247136269597346e-05;
+% eta_opt = 0.023624927961652;
+% lambda_opt = 3.247136269597346e-05;
 
-lambda = lambda_opt;
+% lambda = lambda_opt;
 GDparams.n_batch=100;
 GDparams.rho=0.90; %momentum
-GDparams.decay=0.95; % Learning rate decay
+GDparams.decay=0.70; % Learning rate decay
 GDparams.n_epochs = 10;
-GDparams.eta = eta_opt;
+% GDparams.eta = eta_opt;
+GDparams.alpha = 0.99;
+n_runs = 100;
 
 [b, W] = InitParam(M, trainX, trainY);
 
-% J = ComputeCost(trainX, trainY, W, b, lambda);
+% [b_grad, W_grad] = ComputeGradients(trainX(:,100), trainY(:, 100), W, b, lambda);
+% CompareGradients(trainX(1:300, 1:3), trainY(:, 1:3), M);
 
-% [b_grad, W_grad] = ComputeGradients(trainX, trainY, W, b, lambda);
-% CompareGradients(trainX(1:300, 1), trainY(:, 1), M);
-[Wstar, bstar, tL_saved, vL_saved] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b, lambda);
-acc = ComputeAccuracy(X_test, y_test, Wstar, bstar)
+e_range = {log10(0.05), log10(0.5)};
+l_range = {log10(0.000001), log10(0.1)};
+
+% Fine search range
+% e_range = {log10(0.022), log10(0.03)};
+% l_range = {log10(2.55e-05), log10(2.57e-05)};
+params = HyperParamSearch(e_range, l_range, trainX, trainY, valX, valY, valy, X_test, y_test, GDparams, n_runs);
+[I, M] = max(params(:,3))
+save('storeMatrix.mat','params');
+
+% [Wstar, bstar, muSAv, varSAv, tL_saved, vL_saved] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b, lambda);
+% acc = ComputeAccuracy(X_test, y_test, Wstar, bstar, muSAv, varSAv)
+% figure;
+% plot(tL_saved); hold on;
+% plot(vL_saved);
+% title("Cross Entropy Loss for Training and Valdidation Data");
+% xlabel("Epochs");
+% ylabel("Cross entropy loss");
+% legend("Training loss", "Validation loss");
+% fnameMontage = sprintf('train_val_loss_leak_eta_%f_lambda_%f.png', eta_opt, lambda_opt);
+% saveas(gcf, fnameMontage, 'png');
 %%% Subfunctions
+
+function params = HyperParamSearch(e_range, l_range, trainX, trainY, valX, valY, valy, testX, testy, GDparams, n_runs)
+for i=1:n_runs
+    disp("Starting search run:"+ num2str(i));
+%     [d, N] = size(trainX);
+%     [K, ~] = size(trainY);
+    m = [50, 30]; % number of hidden nodes
+    
+    [b, W] = InitParam(m, trainX, trainY);
+    
+    e= e_range{1} + (e_range{2} - e_range{1})*rand(1, 1);
+    eta = 10^e;
+    GDparams.eta = eta;
+    
+    l = l_range{1} + (l_range{2} - l_range{1})*rand(1, 1);
+    lambda = 10^l;
+    
+    [Wstar, bstar, muSAv, varSAv] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b, lambda);
+    
+    acc = ComputeAccuracy(valX, valy, Wstar, bstar, muSAv, varSAv);
+    disp("Accuracy: " + num2str(acc));
+    params(i, 1) = eta;
+    params(i, 2) = lambda;
+    params(i, 3) = acc;
+end
+end
 
 function [X, Y, y] = LoadBatch(filename)
 dataSet = load(filename);
@@ -54,48 +100,61 @@ M = [d, M, L];
 W = cell(1, K); b=cell(1,K);
 for k=1:K
     W{k} = 0.001*randn(M(k+1), M(k));
-    b{k} = zeros(M(k+1), 1);  
+    b{k} = zeros(M(k+1), 1);
 end
 end
 
-function [P, H, S] = EvaluateClassifier(X0, W, b)
+function [P, H, S, S_hat, muS, varS] = EvaluateClassifier(X0, W, b, varargin)
 K = length(W);
 N = size(X0, 2);
 S = cell(1, K); S_hat = S;
-H = cell(1, K); 
+H = cell(1, K);
 muS = cell(1, K);
 varS = cell(1, K);
 
 S{1} = bsxfun(@plus, W{1}*X0, b{1});
-muS{1} = mean(S{1}, 2);
-varS{1} = var(S{1}, 0, 2)*((N-1)/N);
+if ~isempty(varargin)
+    muS = varargin{1};
+    varS = varargin{2};
+else
+    muS{1} = (1/N)*sum(S{1}, 2);
+    varS{1} = var(S{1}, 0, 2)*((N-1)/N);
+end
 S_hat{1} = BatchNormalize(S{1}, muS{1}, varS{1});
 H{1} = max(0, S_hat{1});
 for i=2:K-1
     S{i} = bsxfun(@plus, W{i}*H{i-1}, b{i});
-    muS{i} = mean(S{i}, 2);
-    varS{i} = var(S{i}, 0, 2)*((N-1)/N);
+    if isempty(varargin)
+        muS{i} = (1/N)*sum(S{i}, 2);
+        varS{i} = var(S{i}, 0, 2)*((N-1)/N);
+    end
     S_hat{i} = BatchNormalize(S{i}, muS{i}, varS{i});
     H{i} = max(0, S_hat{i});
 end
-S{K} = bsxfun(@plus, W{K}*H{K-1}, b{K});
+S{end} = bsxfun(@plus, W{end}*H{end-1}, b{end});
 P = softmax(S{end});
 end
 
 function S_hat = BatchNormalize(S, muS, varS)
-S_hat = ((diag(bsxfun(@plus, varS, eps))).^(-0.5)) * (bsxfun(@minus, S, muS));
+epsilon = 0.001;
+S_hat = ((diag(varS+epsilon))^(-0.5))*(S-muS);
 end
 
 function g = BatchNormBackPass(g, S, muS, varS, N)
-Vb = diag(varS + eps);
-dJdVb = -0.5*sum(g.*Vb.^(-3/2).*diag(S-muS));
-dJdmub = -sum(g.*Vb.^(-1/2));
-dJdS = g.*Vb.^(-1/2) + (2/N)*dJdVb.*diag(S-muS) + dJdmub*(1/N);
+epsilon = 0.001;
+Vb = (varS + epsilon);
+dJdVb = -0.5*sum(g.*Vb.^(-3/2).*(S-muS), 2);
+dJdmub = -sum(g.*Vb.^(-1/2), 2);
+dJdS = g.*Vb.^(-1/2) + (2/N)*dJdVb.*(S-muS) + dJdmub*(1/N);
 g = dJdS;
 end
 
-function J = ComputeCost(X, Y, W, b, lambda)
-P = EvaluateClassifier(X, W, b);
+function J = ComputeCost(X, Y, W, b, lambda, varargin)
+if ~isempty(varargin)
+    P = EvaluateClassifier(X, W, b, varargin{1}, varargin{2});
+else
+    P = EvaluateClassifier(X, W, b);
+end
 K = length(W);
 D = size(X, 2);
 Wij = 0;
@@ -106,43 +165,55 @@ lcross = -log(sum(Y.*P));
 J = (1/D)*sum(lcross)+lambda*Wij;
 end
 
-function acc = ComputeAccuracy(X, y, W, b)
-P = EvaluateClassifier(X, W, b);
+function acc = ComputeAccuracy(X, y, W, b, varargin)
+if ~isempty(varargin)
+    P = EvaluateClassifier(X, W, b, varargin{1}, varargin{2});
+else
+    P = EvaluateClassifier(X, W, b);
+end
+
 [~, kStar] = max(P);
 correct = kStar==y;
 acc = sum(correct)/length(correct);
 end
 
-function [b_grad, W_grad] = ComputeGradients(X, Y, W, b, lambda)
+function [b_grad, W_grad, muS, varS] = ComputeGradients(X, Y, W, b, lambda)
 N = size(X,2);
 K = length(W);
-[P, H, S] = EvaluateClassifier(X, W, b);
-b_grad = cell(1, K);
-W_grad = cell(1, K);
+[P, H, S, S_hat, muS, varS] = EvaluateClassifier(X, W, b);
+
 dJdb = cell(1,K);
 dJdW = cell(1,K);
 
-g = -(Y-P)';
-
-dJdb{K} = (1/N)*sum(g,2);
-dJdW{K} = (1/N)*sum(g'*H(K-1)' + 2*lambda*W{K});
-
-g = g*W{K};
-g = g*diag((S_hat{K-1}>0));
-
+g = -(Y-P);
+dJdb{K} = (1/N)*sum(g, 2);
+dJdW{K} = (1/N)*g*H{K-1}' + 2*lambda*W{K};
+g = W{K}'*g;
+g = g.*(S_hat{K-1}>0);
 for l = K-1:-1:1
-   g = BatchNormBackPass(g, S, muS, varS);
-   dJdb{l} = (1/N)*sum(g);
-   
-end
+    g = BatchNormBackPass(g, S{l}, muS{l}, varS{l}, N);
+    dJdb{l} = (1/N)*sum(g, 2);
+    if l == 1
+        dJdW{l} = (1/N)*g*X' + 2*lambda*W{l};
+    end
+    if l > 1
+        dJdW{l} = (1/N)*g*H{l-1}' + 2*lambda*W{l};
+        g = W{l}'*g;
+        g = g.*(S_hat{l-1}>0);
+    end
 end
 
-function [Wstar, bstar, tL_saved, vL_saved] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b, lambda)
+b_grad = dJdb;
+W_grad = dJdW;
+end
+
+function [Wstar, bstar, muSAv, varSAv, tL_saved, vL_saved] = MiniBatchGD(trainX, trainY, valX, valY, GDparams, W, b, lambda)
 n_batch = GDparams.n_batch;
 eta = GDparams.eta;
 n_epochs = GDparams.n_epochs;
 rho = GDparams.rho;
 decay = GDparams.decay;
+alpha = GDparams.alpha;
 
 K = length(W);
 N = size(trainX,2);
@@ -150,6 +221,7 @@ tL_saved=[];
 vL_saved=[];
 W_mom = cell(1, K);
 b_mom = cell(1, K);
+
 for k=1:K
     W_mom{k} = zeros(size(W{k}));
     b_mom{k} = zeros(size(b{k}));
@@ -164,9 +236,14 @@ for i=1:n_epochs
         Xbatch = trainX(:, inds);
         Ybatch = trainY(:, inds);
         
-        [b_grad, W_grad] = ComputeGradients(Xbatch, Ybatch, W, b, lambda);
-        
+        [b_grad, W_grad, muS, varS] = ComputeGradients(Xbatch, Ybatch, W, b, lambda);
+        if i == 1 && j == 1 
+           muSAv = muS;
+           varSAv = varS;
+        end
         for k=1:K
+            muSAv{k} = alpha*muSAv{k} + (1-alpha)*muS{k};
+            varSAv{k} = alpha*varSAv{k} + (1-alpha)*varS{k};
             W_mom{k} = rho*W_mom{k} + eta*W_grad{k};
             b_mom{k} = rho*b_mom{k} + eta*b_grad{k};
             W{k} = W{k} - W_mom{k};
@@ -174,24 +251,23 @@ for i=1:n_epochs
         end
     end
     eta = decay*eta;
-    trainLoss = ComputeCost(trainX, trainY, W, b, lambda);
+    trainLoss = ComputeCost(trainX, trainY, W, b, lambda, muSAv, varSAv);
     disp("Current training loss: " + num2str(trainLoss));
     tL_saved = [tL_saved;trainLoss];
-    valLoss = ComputeCost(valX, valY, W, b, lambda);
+    valLoss = ComputeCost(valX, valY, W, b, lambda, muSAv, varSAv);
     vL_saved = [vL_saved; valLoss];
 end
-disp("Final training loss: " + num2str(trainLoss));
 Wstar = W;
 bstar = b;
 end
 
 function CompareGradients(trainX, trainY, M)
 lambda=0;
-
+size(trainX), size(trainY)
 [b, W] = InitParam(M, trainX, trainY);
 [b_grad, W_grad] = ComputeGradients(trainX, trainY, W, b, lambda);
 [b_gradn, W_gradn] = ComputeGradsNumSlow(trainX, trainY, W, b, lambda, 1e-5);
-% [b_gradn_quick, W_gradn_quick] = ComputeGradsNum(trainX(1:300, 1), trainY(:,1), W, b, lambda, 1e-5);    
+% [b_gradn_quick, W_gradn_quick] = ComputeGradsNum(trainX(1:300, 1), trainY(:,1), W, b, lambda, 1e-5);
 K = length(W);
 for k=1:K
     w_grad_diff_slow{k} = max(max(abs(W_grad{k}-W_gradn{k})));
@@ -199,10 +275,6 @@ for k=1:K
 end
 w_grad_diff_slow
 b_grad_diff_slow
-% w1_grad_diff_quick = max(max(abs(W_grad{1}-W_gradn_quick{1})))
-% w2_grad_diff_quick = max(max(abs(W_grad{2}-W_gradn_quick{2})))
-% b1_grad_diff_quick = max(max(abs(b_grad{1}-b_gradn_quick{1})))
-% b2_grad_diff_quick = max(max(abs(b_grad{2}-b_gradn_quick{2})))
 end
 
 %%% Numerical gradients
@@ -227,7 +299,7 @@ end
 for j=1:length(W)
     grad_W{j} = zeros(size(W{j}));
     
-    for i=1:numel(W{j})   
+    for i=1:numel(W{j})
         W_try = W;
         W_try{j}(i) = W_try{j}(i) + h;
         c2 = ComputeCost(X, Y, W_try, b, lambda);
@@ -267,11 +339,11 @@ for j=1:length(W)
         W_try = W;
         W_try{j}(i) = W_try{j}(i) - h;
         c1 = ComputeCost(X, Y, W_try, b, lambda);
-    
+        
         W_try = W;
         W_try{j}(i) = W_try{j}(i) + h;
         c2 = ComputeCost(X, Y, W_try, b, lambda);
-    
+        
         grad_W{j}(i) = (c2-c1) / (2*h);
     end
 end

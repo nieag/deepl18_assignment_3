@@ -106,6 +106,7 @@ for k=1:K
 end
 for i=1:N
    g = (-Y(:,i)'/(Y(:,i)'*P(:,i)))*(diag(P(:,i))-(P(:,i)*P(:,i)'));
+   size(g)
    for k=K:-1:1
        dJdb{k} = dJdb{k} + g';
        if k == 1
